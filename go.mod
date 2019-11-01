@@ -14,3 +14,5 @@ require (
 	github.com/libp2p/go-libp2p-routing-helpers v0.1.0
 	github.com/libp2p/go-libp2p-swarm v0.1.0
 )
+
+go 1.13
