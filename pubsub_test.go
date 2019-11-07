@@ -3,6 +3,7 @@ package namesys
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -12,7 +13,6 @@ import (
 	bhost "github.com/libp2p/go-libp2p-blankhost"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	record "github.com/libp2p/go-libp2p-record"
-	rhelper "github.com/libp2p/go-libp2p-routing-helpers"
 	swarmt "github.com/libp2p/go-libp2p-swarm/testing"
 )
 
@@ -79,7 +79,10 @@ func setupTest(ctx context.Context, t *testing.T) (*PubsubValueStore, []*PubsubV
 			t.Fatal(err)
 		}
 
-		vss[i] = NewPubsubValueStore(ctx, hosts[i], rhelper.Null{}, fs, testValidator{})
+		vss[i], err = NewPubsubValueStore(ctx, hosts[i], fs, testValidator{})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	pub := vss[0]
 	vss = vss[1:]
@@ -121,7 +124,10 @@ func TestEarlyPublish(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		vss[i] = NewPubsubValueStore(ctx, hosts[i], rhelper.Null{}, fs, testValidator{})
+		vss[i], err = NewPubsubValueStore(ctx, hosts[i], fs, testValidator{})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	pub := vss[0]
@@ -306,6 +312,64 @@ func TestWatch(t *testing.T) {
 	v = string(<-ch)
 	if v != "valid for key 2" {
 		t.Errorf("got unexpected value: %s", v)
+	}
+}
+
+func TestPutMany(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	hosts := newNetHosts(ctx, t, 5)
+	vss := make([]*PubsubValueStore, len(hosts))
+	for i := 0; i < len(vss); i++ {
+		fs, err := pubsub.NewFloodSub(ctx, hosts[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		vss[i], err = NewPubsubValueStore(ctx, hosts[i], fs, testValidator{})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for i := 1; i < len(hosts); i++ {
+		connect(t, hosts[0], hosts[i])
+	}
+
+	const numRoutines = 1000 // Note: if changing the numRoutines also change the number of digits in the fmtString
+	const fmtString = "%s-%04d"
+	const key = "/namespace/key"
+	doneCh := make(chan error, numRoutines)
+	for i := 0; i < numRoutines; i++ {
+		rtNum := i
+		go func() {
+			err := vss[0].PutValue(ctx, key, []byte(fmt.Sprintf(fmtString, key, rtNum)))
+			doneCh <- err
+		}()
+	}
+
+	for i := 0; i < numRoutines; i++ {
+		err := <-doneCh
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	finalValue := []byte(fmt.Sprintf(fmtString, key, numRoutines-1))
+	for i := 0; i < len(hosts); i++ {
+		for {
+			v, err := vss[i].GetValue(ctx, key)
+			if err != routing.ErrNotFound {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if bytes.Equal(v, finalValue) {
+					break
+				}
+			}
+			time.Sleep(time.Millisecond * 100)
+		}
 	}
 }
 
